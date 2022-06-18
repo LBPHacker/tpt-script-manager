@@ -1,10 +1,15 @@
-local date  = require("date")
-local lapis = require("lapis")
-local auth  = require("auth")
-local db    = require("lapis.db")
-local util  = require("lapis.util")
+local date   = require("date")
+local lapis  = require("lapis")
+local auth   = require("auth")
+local db     = require("lapis.db")
+local config = require("lapis.config").get()
+local util   = require("lapis.util")
 
 local app = lapis.Application()
+
+local function good_url_for(self, route)
+	return config.url_prefix .. self:url_for(route)
+end
 
 function app:cookie_attributes(key, value)
 	if key == "session_id" and value == "" then
@@ -27,9 +32,9 @@ end)
 
 app:get("index", "/", function(self)
 	if self.user_id then
-		return [[yo, ]] .. self.user_name .. [[. you can <a href="]] .. self:url_for("logout") .. [[">log out</a>.<br>]] .. self.anti_csrf
+		return [[hey, ]] .. self.user_name .. [[. you can <a href="]] .. good_url_for(self, "logout") .. [[">log out</a>.<br>anti-csrf: ]] .. self.anti_csrf
 	else
-		return [[yo. you can <a href="]] .. self:url_for("login") .. [[">log in</a>.]]
+		return [[hey. you can <a href="]] .. good_url_for(self, "login") .. [[">log in</a>.]]
 	end
 end)
 
@@ -44,7 +49,7 @@ app:get("login", "/login", function(self)
 	return { redirect_to = auth.get(self.req.headers["referer"]) }
 end)
 
-app:get("/sso", function(self)
+app:get("/check", function(self)
 	local uid, name, redirect = auth.check(self.req.params_get.PowderToken, self.req.params_get.AppToken)
 	if not uid then
 		return name

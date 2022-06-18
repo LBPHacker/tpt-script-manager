@@ -15,4 +15,6 @@ return {
 		},
 	},
 	secret = "the quick brown fox jumps over the lazy dog",
+	url_prefix = "",
+	url_prefix_production = "",
 }

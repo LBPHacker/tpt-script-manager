@@ -21,14 +21,14 @@ config({ "development", "production" }, {
 		},
 	},
 	secret = secret_config.secret,
-	url_prefix = "",
+	url_prefix = secret_config.url_prefix,
 	ca_certs = "/etc/ssl/certs/ca-certificates.crt",
 	resolver = "127.0.0.1",
 })
 
 config("production", {
 	port = 3001,
-	url_prefix = "/scripts",
+	url_prefix = secret_config.url_prefix_production,
 	code_cache = "on",
 	resolver = "8.8.8.8 8.8.4.4",
 })
