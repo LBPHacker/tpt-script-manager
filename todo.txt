@@ -1,0 +1,92 @@
+- todo
+  - use inode-based file ops
+  - migrate rects to 4-item arrays
+  - text content-based secondary size
+- constraints
+  - single download into autorun.lua
+  - update-able through itself
+    - really this is probably as simple as having the script_manager module
+      save itself to autorun.lua
+  - bundle-able
+    - needs to be single-file
+      - but it already is for autorun.lua
+    - needs to be able to bundle scripts
+      - so it needs a bundled repository, bundled://
+        - the scripts also need to be in an installed state >_>
+        - the online one would be https://pt.trigraph.net/scripts/whatever
+        - manifest.jsons would need to be merged
+          - for modules with non-identical ids, the higher priority one wins
+          - for modules with identical ids, the higher version one wins
+- workflow
+  - enumerate modules
+    - valid module formats
+      - .lua module
+      - directory with init.lua inside
+      - .tar.bz2 bundle
+        - acts like a directory
+- controls
+  - types
+    - button
+    - textbox
+    - checkbox (can be a button really)
+    - panel (mostly just a border)
+  - have a primary axis (horizontal or vertical)
+    - primary dimension is the one along the primary axis
+  - have the following 1D properties
+    - spacing (primary, in between children)
+    - padding (secondary, on all four borders, outside children)
+    - parent space fill ratio
+  - have the following 2D properties
+    - minimum size
+      - special value: fit children (< 0? -1?)
+    - maximum size
+      - special value: infinite (0?)
+      - wins over (is applied after) min size
+    - alignment ({ one extreme, middle, other extreme }^2)
+  - content size: bounding box that encloses children and inter-child spacing
+    - its primary dimension is the sum of the primary dimensions of children
+      and all (signed!) inter-child spacing between them
+      - inter-child spacing is derived from the parent's current child spacing
+        and inserted before each "non-first" child
+      - the first child's spacing setting is discarded
+    - its secondary dimension is the largest of the secondary dimensions of all
+      children, or 0 if no child is present
+      - note how alignment doesn't affect this definition
+  - padded size: content size + padding
+  - order of sizing evaluation
+    - effective size starts at (0, 0)
+    - phase 1
+      - children phase 1
+        - thus, each child's minimum padded size is derived
+        - thus, minimum content size is derived
+      - minimum size is applied to effective size
+        - a value of fit-children uses the minimum content size in both
+          dimensions separately
+      - extra-child spacing and padding is applied on top of effective size
+    - phase 2
+      - the root element is resized to fill the screen
+    - phase 3
+      - fill space is determined: difference between effective size and padded
+        size, lower-bounded by (0, 0)
+      - any children with a non-zero secondary fill ratio are grown such that
+        padded size matches effective size, without violating their maximum size
+      - children repeatedly consume primary fill space until none is left or all
+        children are satisfied
+        - children start from an unsatisfied state if their primary fill ratio
+          is non-zero
+        - in each iteration, unsatisfied children attempt to divvy the remaining
+          fill space in accordance with their fill ratio relations
+          - but in practice, only as much fill space is divvied up as possible
+            without violating any affected child's maximum size
+          - if all fill space has been used up, stop
+          - all children whose maximum size prevented the usage of all remaining
+            fill space are marked satisfied
+          - go again
+      - children are positioned along the primary axis such that the control's
+        content alignment is respected inside the confines of the padded
+        bounding box (alignment beyond this bounding box is implemented via
+        scrolling)
+      - children are positioned along the secondary axis such that their
+        alignment is respected inside the confines of the padded bounding box
+        (alignment beyond this bounding box is implemented via scrolling)
+      - children phase 3
