@@ -78,9 +78,9 @@ create table scripts (
 		default 0,
 	user_id bigint
 		not null,
-	staff_approved boolean
+	flags text
 		not null
-		default false,
+		default '',
 	constraint scripts_module_uq unique (module),
 	constraint scripts_user_id_fk foreign key (user_id) references users (id),
 	constraint scripts_id_pk primary key (id)
@@ -164,13 +164,13 @@ begin
 					listed = listed_in,
 					data = data_in,
 					updated_at = transaction_timestamp(),
-					staff_approved = false -- Reset this every update.
+					flags = '' -- Reset this every update.
 					where scripts.user_id = user_id_in or bypass_owner_check
 				returning id, blob, version
 					into script_id, blob_out, new_version;
 			if script_id is null then
 				-- This happens if the update predicate evaluates to false. In this case,
-				-- this means the script exists but isn't owner by user_id_in.
+				-- this means the script exists but isn't owned by user_id_in.
 				result.status = 'no_access';
 			elseif new_version = 0 then
 				result.status = 'ok';
@@ -289,20 +289,20 @@ create trigger users_enforce_script_data_trigger
 		old.max_scripts > new.max_scripts) -- Enforce users.max_scripts.
 	execute function users_enforce_limits_triggerfunc();
 
-create type staff_approve_script_status as enum (
+create type staff_manage_script_flags_status as enum (
 	'ok',
 	'no_script_version'
 );
-create function staff_approve_script(
+create function staff_manage_script_flags(
 	in module_in text,
 	in version_in bigint,
-	in approved_in boolean
-) returns staff_approve_script_status language plpgsql as $$ declare
+	in flags_in text
+) returns staff_manage_script_flags_status language plpgsql as $$ declare
 	script_id bigint;
 begin
 	update scripts set
-		staff_approved = approved_in
-		where module = module_in and (version = version_in or not approved_in)
+		flags = flags_in
+		where module = module_in and version = version_in
 		returning id
 			into script_id;
 	if script_id is null then
@@ -403,7 +403,7 @@ create view manifest as
 		scripts.dependencies as dependencies,
 		scripts.listed as listed,
 		scripts.version as version,
-		scripts.staff_approved as staff_approved,
+		scripts.flags as flags,
 		users.name as author,
 		users.powder_id as author_id
 		from scripts join users on scripts.user_id = users.id;

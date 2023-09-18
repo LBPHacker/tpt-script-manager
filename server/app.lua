@@ -208,26 +208,22 @@ local function script_property(property)
 		if self.req.method ~= "PUT" then
 			return { status = 405, json = { Status = "InvalidMethod" } }
 		end
-		if property == "staff_approved" then
+		if property == "flags" then
 			local present, err = check_present({
-				{ value = self.params.Approved, name = "Approved" },
+				{ value = self.params.Flags, name = "Flags" },
 			})
 			if not present then
 				return record_failure(self, err)
 			end
-			local approved = unpack(present) == "true"
-			local version = db.NULL
-			if approved then
-				local err
-				version, err = parse_integer(self.params.Version, 0, 10000000, "Version")
-				if not version then
-					return err
-				end
+			local flags = unpack(present)
+			local version, err = parse_integer(self.params.Version, 0, 10000000, "Version")
+			if not version then
+				return err
 			end
 			data_lock_acquire(self)
 			local result = db.query([[
-				select staff_approve_script(?, ?, ?);
-			]], self.params.name, version, approved)[1]
+				select staff_manage_script_flags(?, ?, ?);
+			]], self.params.name, version, flags)[1]
 			if result == "ok" then
 				util.emit_manifest()
 			end
@@ -241,7 +237,7 @@ local function script_property(property)
 	end
 end
 
-app:match("/staff/scripts/:name/Approved", script_property("staff_approved"))
+app:match("/staff/scripts/:name/Flags", script_property("flags"))
 
 local function user_property(property)
 	return function(self)

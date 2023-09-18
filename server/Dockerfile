@@ -34,4 +34,6 @@ VOLUME /tpt-scripts/temp
 VOLUME /tpt-scripts/data
 EXPOSE 3001
 ADD . .
-ENTRYPOINT ["dumb-init", "lapis", "server"]
+ARG LAPIS_ENV=production
+ENV LAPIS_ENV=${LAPIS_ENV}
+ENTRYPOINT dumb-init lapis server ${LAPIS_ENV}

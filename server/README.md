@@ -8,7 +8,7 @@ objects of the form
 
  - `Status` is `"BadRequest"` (HTTP 400);
  - `Reason`: some machine-reachable explanation of the issue, e.g. `BadVersion`
-   when a malformed version is passed to `PUT /staff/scripts/{Name}/Approved`.
+   when a malformed version is passed to `PUT /staff/scripts/{Name}/Flags`.
 
 ### Authorization
 
@@ -202,14 +202,13 @@ The response body is a JSON object with the following properties:
 	- `"Deleted"`: the script has just been deleted (this property takes this
 	  value even if it had not existed).
 
-### `PUT /staff/scripts/{Name}/Approved`
+### `PUT /staff/scripts/{Name}/Flags`
 
 The request body is a form with the following properties:
 
- - `Approved`: the desired boolean `Approved` setting for the script `Name` in
-   string form (`true` or `false`);
- - `Version`: the version of script `Name` whose `Approved` setting is to
-   be modified; required only if `Approved` is `true`.
+ - `Flags`: script flags string;
+ - `Version`: the version of script `Name` whose `Flags` setting is to
+   be modified.
 
 The response body is a JSON object with the following properties:
 
@@ -259,10 +258,10 @@ The response body is a JSON object with the following properties:
 The request body is a form with the following properties:
 
  - `Locked`: the desired boolean `Locked` setting for the user
-   `powder_id` in string form (`true` or `false`).
+   `PowderID` in string form (`true` or `false`).
 
 The response body is a JSON object with the following properties:
 
  - `Status`: request status, one of:
-	- `"NotFound"` (HTTP 404) if user `powder_id` has not registered;
+	- `"NotFound"` (HTTP 404) if user `PowderID` has not registered;
 	- `"OK"` (HTTP 200) upon success.

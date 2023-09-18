@@ -25,7 +25,7 @@ local function emit_manifest(before_func, after_func)
 			Dependencies  = row.dependencies,
 			Listed        = row.listed,
 			Version       = row.version,
-			StaffApproved = row.staff_approved,
+			Flags         = row.flags,
 			Author        = row.author,
 			AuthorID      = row.author_id,
 		})
