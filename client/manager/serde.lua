@@ -64,9 +64,10 @@ local function serialize_impl(track, parts, thing, pretty, level)
 		if getmetatable(thing) then
 			return nil, "cannot serialize metatables"
 		end
-		table.insert(parts, pretty and "{\n" or "{")
+		table.insert(parts, pretty and "{" or "{")
 		for key, value in pairs(thing) do
 			if pretty then
+				table.insert(parts, "\n")
 				table.insert(parts, ("\t"):rep(level - 2))
 			end
 			local ok, err = serialize_one(parts, key, pretty, "keys", level)
@@ -79,11 +80,9 @@ local function serialize_impl(track, parts, thing, pretty, level)
 				return nil, err
 			end
 			table.insert(parts, ",")
-			if pretty then
-				table.insert(parts, "\n")
-			end
 		end
 		if pretty and next(thing) then
+			table.insert(parts, "\n")
 			table.insert(parts, ("\t"):rep(level - 3))
 		end
 		table.insert(parts, "}")

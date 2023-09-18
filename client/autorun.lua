@@ -57,15 +57,15 @@ masked_metatable(string_meta)
 assert(not getmetatable(""), "cannot mask metatables")
 
 local function make_strict_env(base)
-	return setmetatable({}, { __index = function(_, key)
-		local value = rawget(base, key)
-		if value ~= nil then
-			return value
-		end
+	local env = setmetatable({}, { __index = function(_, key)
 		error("__index on env: " .. tostring(key), 2)
 	end, __newindex = function(_, key)
 		error("__newindex on env: " .. tostring(key), 2)
 	end })
+	for key, value in pairs(base) do
+		rawset(env, key, value)
+	end
+	return env
 end
 local manager_strict_env = make_strict_env(this_env)
 
@@ -84,9 +84,8 @@ local function xpcall_wrap(func, handler)
 		if not xpcall(function()
 			args_out = packn(func(unpackn(args_in)))
 		end, function(err)
-			local full = tostring(err) .. "\n" .. debug.traceback()
 			if handler then
-				handler(err, full)
+				handler(err, debug.traceback(err, 2))
 			end
 		end) then
 			return
@@ -149,16 +148,18 @@ local function make_require(readall, env)
 			end
 			loading[modname] = true
 			local ok = true
+			local result
+			local err_outer
 			xpcall_wrap(function()
 				result = func()
 			end, function(err, full)
-				ok = false
-				result = err
 				print(("error in module %s: %s"):format(modname, full))
+				ok = false
+				err_outer = err
 			end)()
 			loading[modname] = nil
 			if not ok then
-				error(result, 0)
+				error(err_outer, 0)
 			end
 			if result == nil then
 				result = true
@@ -182,7 +183,6 @@ local module_root = path_to_self:gsub("\\", "/"):match("^(.*/)[^/]*$")
 if not module_root then
 	error("cannot find module root in source string: " .. path_to_self)
 end
-local package
 manager_require, manager_package = make_require(function(path)
 	path = module_root .. path
 	if not fs.exists(path) then
@@ -195,6 +195,10 @@ manager_require, manager_package = make_require(function(path)
 	return data
 end, manager_strict_env)
 
+local can_yield_xpcall = coroutine.resume(coroutine.create(function()
+	assert(pcall(coroutine.yield))
+end))
+
 manager_package.loaded["manager.environment"] = {
 	xpcall_wrap      = xpcall_wrap,
 	make_require     = make_require,
@@ -205,6 +209,7 @@ manager_package.loaded["manager.environment"] = {
 	packn            = packn,
 	unpackn          = unpackn,
 	masked_metatable = masked_metatable,
+	can_yield_xpcall = can_yield_xpcall,
 }
 for key, value in pairs({
 	ipairs  = ipairs,
@@ -221,7 +226,9 @@ end, function(_, full)
 end)()
 
 xpcall_wrap(function()
-	dofile("autorun2.lua")
+	if fs.isFile("autorun2.lua") then
+		dofile("autorun2.lua")
+	end
 end, function(_, full)
 	print("autorun2.lua error: " .. full)
 end)()

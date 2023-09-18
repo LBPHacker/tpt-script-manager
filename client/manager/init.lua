@@ -1,10 +1,11 @@
-local serde       = require("manager.serde")
-local util        = require("manager.util")
-local atexit      = require("manager.atexit")
-local logger      = require("manager.logger")
-local config      = require("manager.config")
-local environment = require("manager.environment")
-local sandbox     = require("manager.sandbox")
+local serde           = require("manager.serde")
+local util            = require("manager.util")
+local atexit          = require("manager.atexit")
+local logger          = require("manager.logger")
+local config          = require("manager.config")
+local environment     = require("manager.environment")
+local sandbox         = require("manager.sandbox")
+local blocking_prompt = require("manager.blocking_prompt")
 
 local manager = {
 	how_are_you_holding_up = "because I'm a potato",
@@ -71,16 +72,15 @@ if not tpt.version or util.version_less({ tpt.version.major, tpt.version.minor }
 	error("version not supported")
 end
 if _G.manager ~= nil then
-	local failed
+	local ok
 	if type(_G.manager) == "table" and _G.manager.how_are_you_holding_up == "because I'm a potato" then
+		ok = true
 		environment.xpcall_wrap(_G.manager.unload, function(_, full)
+			ok = false
 			print("top-level error: " .. full)
-			failed = true
 		end)()
-	else
-		failed = true
 	end
-	if failed then
+	if not ok then
 		error("failed to unload active script manager instance, try restarting TPT")
 	end
 end
@@ -97,21 +97,35 @@ add_permanent_event(event.mousemove , environment.xpcall_wrap(mousemove_handler 
 add_permanent_event(event.blur      , environment.xpcall_wrap(blur_handler      , event_error_handler))
 add_permanent_event(event.close     , environment.xpcall_wrap(close_handler     , event_error_handler))
 
-local function validate_script_manifest(manifest)
+local function normalize_manifest(manifest)
 	if type(manifest) ~= "table" then
 		return nil, "root is not a table"
 	end
-	if type(manifest.dependencies) ~= "table" then
-		return nil, ".dependencies is not a table"
-	end
-	local ok, bad_key = util.pure_array(manifest.dependencies)
-	if not ok then
-		return nil, (".dependencies is not a pure array due to key %s"):format(tostring(bad_key))
-	end
-	for index, value in ipairs(manifest.dependencies) do
-		if type(value) ~= "string" then
-			return nil, (".dependencies has non-string item %s at index %i"):format(tostring(value, index))
+	local function want_string_array(name)
+		if manifest[name] == nil then
+			manifest[name] = {}
 		end
+		if type(manifest[name]) ~= "table" then
+			return nil, "." .. name .. " is not a table"
+		end
+		local ok, bad_key = util.pure_array(manifest[name])
+		if not ok then
+			return nil, ("." .. name .. " is not a pure array due to key %s"):format(tostring(bad_key))
+		end
+		for index, value in ipairs(manifest[name]) do
+			if type(value) ~= "string" then
+				return nil, ("." .. name .. " has non-string item %s at index %i"):format(tostring(value, index))
+			end
+		end
+		return true
+	end
+	local ok, err = want_string_array("dependencies")
+	if not ok then
+		return nil, err
+	end
+	local ok, err = want_string_array("flags")
+	if not ok then
+		return nil, err
 	end
 	return true
 end
@@ -135,10 +149,11 @@ do
 			else
 				manifest = {
 					dependencies = {},
+					flags        = {},
 					top_level    = true,
 				}
 			end
-			local ok, err = validate_script_manifest(manifest)
+			local ok, err = normalize_manifest(manifest)
 			if not ok then
 				return nil, ("invalid manifest: %s"):format(err)
 			end
@@ -334,16 +349,15 @@ local function initialize_script(log, script)
 		for dependency in pairs(script.info.dependencies) do
 			util.clone_table(loaded_scripts[dependency].info.chunks, chunks_with_deps)
 		end
-		local sandbox = script.info.make_sandbox(chunks_with_deps)
+		local sandbox = script.info.make_sandbox(chunks_with_deps, script.info.flags)
 		script.atexit:atexit(function(log)
 			sandbox.exit(log)
 		end)
-		local err_outer
 		local ok = true
+		local err_outer
 		environment.xpcall_wrap(sandbox.entrypoint, function(err, full)
 			ok = false
 			err_outer = err
-			log:err("error in sandbox entrypoint: %s", full)
 		end)()
 		if not ok then
 			log:err("failed to initialize script: %s", tostring(err_outer))
@@ -386,7 +400,9 @@ local function autoload_scripts(log)
 		end
 		for name, dependencies in pairs(name_to_dependencies) do
 			for dependency in pairs(dependencies) do
-				name_to_dependents[dependency][name] = true
+				if name_to_dependents[dependency] then
+					name_to_dependents[dependency][name] = true
+				end
 			end
 		end
 		while next(to_visit) do

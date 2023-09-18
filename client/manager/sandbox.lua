@@ -1,8 +1,12 @@
-local util        = require("manager.util")
-local logger      = require("manager.logger")
-local environment = require("manager.environment")
-local check       = require("manager.check")
-local atexit      = require("manager.atexit")
+local util            = require("manager.util")
+local logger          = require("manager.logger")
+local environment     = require("manager.environment")
+local check           = require("manager.check")
+local atexit          = require("manager.atexit")
+local no_yield        = require("manager.no_yield")
+local blocking_prompt = require("manager.blocking_prompt")
+
+local shared_runner = blocking_prompt.make_runner()
 
 local CALLBACK_PROPERTY = {
 	[ "Update"        ] = true,
@@ -27,16 +31,24 @@ local EL_TO_PROPERTY = {
 	[ "heat"     ] = "Temperature",
 	[ "hconduct" ] = "HeatConduct",
 }
+local BLOCKING_PROMPT_AVAILABLE = {
+	[ event.textinput                   ] = true,
+	[ event.textediting                 ] = true,
+	[ event.keypress                    ] = true,
+	[ event.keyrelease                  ] = true,
+	[ event.mousedown                   ] = true,
+	[ event.mouseup                     ] = true,
+	[ event.mousemove                   ] = true,
+	[ event.mousewheel                  ] = true,
+	[ event.tick                        ] = true, -- actually ignores the "stop" return value but it's fine
+	[ "register_once_compat_mouseclick" ] = true,
+	[ "register_once_compat_keypress"   ] = true,
+}
 
 local sandboxes = {}
 local function broadcast_element_id(identifier, id)
 	for _, sandbox in pairs(sandboxes) do
-		local ok, err = pcall(function()
-			sandbox.script_env.elements[identifier] = id
-		end)
-		if not ok then
-			sandbox.script_log:err("failed to broadcast %s = %s: %s", identifier, tostring(id), tostring(err))
-		end
+		sandbox.elements[identifier] = id
 	end
 end
 
@@ -59,7 +71,8 @@ local event_handler_wrappers = {}
 local native_event_types = {}
 
 local function factory(script_name)
-	return function(chunks_with_deps)
+	return function(chunks_with_deps, flags)
+		-- TODO: use flags
 		local sandbox_atexit = atexit.make_atexit()
 		assert(not sandboxes[script_name])
 		local sandbox_info = {}
@@ -69,6 +82,25 @@ local function factory(script_name)
 		end)
 		local script_log = logger.make_logger(script_name)
 
+		local script_runner
+		local function make_blocking_wrapper_factory(...)
+			local default_args = environment.packn(...)
+			return function(func)
+				return function(...)
+					local runner = script_runner or shared_runner
+					local args_out = environment.packn(runner:dispatch(func, ...))
+					if runner:status() == "dispatching" then
+						if runner == shared_runner then
+							shared_runner = blocking_prompt.make_runner()
+							script_runner = runner
+						end
+						return environment.unpackn(default_args)
+					end
+					return environment.unpackn(args_out)
+				end
+			end
+		end
+
 		local function copy_simple_values(dest, src)
 			for key, value in pairs(src) do
 				if type(key) == "boolean" or
@@ -76,6 +108,15 @@ local function factory(script_name)
 				   type(key) == "string" then
 					dest[key] = value
 				end
+			end
+		end
+
+		local function allow_query_only(func, max_arg_count)
+			return function(...)
+				if select("#", ...) > max_arg_count then
+					error("cannot set query-only property", 2)
+				end
+				return func(...)
 			end
 		end
 
@@ -103,7 +144,6 @@ local function factory(script_name)
 			"select",
 			"unpack",
 			"string",
-			"coroutine",
 			"bz2",
 			"graphics",
 			"table",
@@ -121,61 +161,89 @@ local function factory(script_name)
 		script_env.package = mod_package
 
 		script_env.tpt = {
-			-- TODO-priv_tpt: menu_enabled
-			-- TODO-priv_tpt: set_clipboard
-			-- TODO-priv_tpt: setwindowsize
-			-- TODO-priv_tpt: num_menus
-			-- TODO-priv_tpt: active_menu
-			-- TODO-priv_tpt: get_clipboard
-			-- TODO-priv_tpt: record
-			-- TODO-priv_tpt: screenshot
-			-- TODO-priv_tpt: set_pause
-			-- TODO-priv_tpt: toggle_pause
-			-- TODO-priv_tpt: beginGetScript
-			-- TODO-priv_tpt: setfpscap
-			-- TODO-priv_tpt: get_name
+			set_pause          = tpt.set_pause,
+			toggle_pause       = tpt.toggle_pause,
+			menu_enabled       = allow_query_only(tpt.menu_enabled, 1),
+			active_menu        = allow_query_only(tpt.active_menu, 0),
+			setfpscap          = allow_query_only(tpt.setfpscap, 0),
+			setdrawcap         = allow_query_only(tpt.setdrawcap, 0),
+			setwindowsize      = allow_query_only(tpt.setwindowsize, 0),
+			set_console        = allow_query_only(tpt.set_console, 0),
+			perfectCircleBrush = allow_query_only(tpt.perfectCircleBrush, 0),
+			decorations_enable = allow_query_only(tpt.decorations_enable, 0),
+			hud                = allow_query_only(tpt.hud, 0),
 		}
 		for _, name in ipairs({
-			"drawpixel",
-			"reset_velocity",
 			"get_elecmap",
 			"set_elecmap",
-			"set_pressure",
-			"get_property",
-			"set_property",
-			"hud",
-			"textwidth",
 			"log",
-			"element",
-			"display_mode",
-			"setdrawcap",
-			"fillrect",
-			"perfectCircleBrush",
 			"getPartIndex",
-			"reset_spark",
-			"drawline",
-			"decorations_enable",
 			"create",
 			"delete",
 			"setfire",
-			"drawrect",
 			"set_gravity",
 			"get_numOfParts",
 			"version",
 			"next_getPartIndex",
-			"set_wallmap",
-			"set_console",
-			"setdebug",
 			"get_wallmap",
 			"newtonian_gravity",
 			"start_getPartIndex",
 			"ambient_heat",
-			"reset_gravity_field",
 			"heat",
-			"drawtext",
-			"watertest",
+			"num_menus",
 		}) do
 			script_env.tpt[name] = util.deep_clone(tpt[name])
+		end
+		if flags["deprecated_20230918"] then
+			for _, name in ipairs({
+				"drawrect",
+				"drawtext",
+				"drawline",
+				"fillrect",
+				"textwidth",
+				"drawpixel",
+				"get_property",
+				"set_property",
+				"element",
+				"set_pressure",
+				"watertest",
+			}) do
+				script_env.tpt[name] = util.deep_clone(tpt[name])
+			end
+			if environment.can_yield_xpcall then
+				script_env.tpt.message_box = blocking_prompt.message_box
+				script_env.tpt.input       = blocking_prompt.input
+				script_env.tpt.throw_error = blocking_prompt.throw_error
+				script_env.tpt.confirm     = blocking_prompt.confirm
+			end
+		end
+
+		if flags["priv_tpt"] then
+			for _, name in ipairs({
+				"menu_enabled",
+				"set_clipboard",
+				"setwindowsize",
+				"active_menu",
+				"get_clipboard",
+				"record",
+				"screenshot",
+				"beginGetScript",
+				"setfpscap",
+				"get_name",
+				"perfectCircleBrush",
+				"set_wallmap",
+				"decorations_enable",
+				"set_console",
+				"setdebug",
+				"reset_spark",
+				"reset_gravity_field",
+				"setdrawcap",
+				"hud",
+				"display_mode",
+				"reset_velocity",
+			}) do
+				script_env.tpt[name] = tpt[name]
+			end
 		end
 
 		local parts_mt = { __index = function(tbl, key)
@@ -208,50 +276,87 @@ local function factory(script_name)
 			end
 		end
 
+		-- TODO: troll scripts into using non-blocking http request status loops
 		script_env.http = {
 			getAuthToken = http.getAuthToken,
-			-- TODO-priv_http: post
-			-- TODO-priv_http: get
 		}
 
-		script_env.io = {
-			-- TODO-priv_fs: input
-			-- TODO-priv_fs: stdin
-			-- TODO-priv_fs: tmpfile
-			-- TODO-priv_fs: read
-			-- TODO-priv_fs: output
-			-- TODO-priv_fs: open
-			-- TODO-priv_fs: close
-			-- TODO-priv_fs: write
-			-- TODO-priv_fs: flush
-			-- TODO-priv_fs: type
-			-- TODO-priv_fs: lines
-			-- TODO-priv_fs: stdout
-			-- TODO-priv_fs: stderr
-		}
+		if flags["priv_http"] then
+			for _, name in ipairs({
+				"post",
+				"get",
+			}) do
+				script_env.http[name] = http[name]
+			end
+		end
 
-		script_env.fileSystem = {
-			-- TODO-priv_fs: exists,
-			-- TODO-priv_fs: list,
-			-- TODO-priv_fs: removeDirectory,
-			-- TODO-priv_fs: isFile,
-			-- TODO-priv_fs: removeFile,
-			-- TODO-priv_fs: move,
-			-- TODO-priv_fs: copy,
-			-- TODO-priv_fs: makeDirectory,
-			-- TODO-priv_fs: isDirectory,
-			-- TODO-priv_fs: isLink,
-		}
+		if flags["priv_fs"] then
+			script_env.fileSystem = {
+				exists          = fs.exists,
+				list            = fs.list,
+				removeDirectory = fs.removeDirectory,
+				isFile          = fs.isFile,
+				removeFile      = fs.removeFile,
+				move            = fs.move,
+				copy            = fs.copy,
+				makeDirectory   = fs.makeDirectory,
+				isDirectory     = fs.isDirectory,
+				isLink          = fs.isLink,
+			}
+			script_env.io = {
+				input   = io.input,
+				stdin   = io.stdin,
+				read    = io.read,
+				output  = io.output,
+				open    = io.open,
+				close   = io.close,
+				write   = io.write,
+				flush   = io.flush,
+				type    = io.type,
+				lines   = io.lines,
+				stdout  = io.stdout,
+				stderr  = io.stderr,
+			}
+		end
 
 		script_env.platform = {
 			ident       = plat.ident,
 			releaseType = plat.releaseType,
 			platform    = plat.platform,
-			-- TODO-priv_platform: exeName,
-			-- TODO-priv_platform: clipboardPaste,
-			-- TODO-priv_platform: clipboardCopy,
-			-- TODO-priv_platform: openLink,
-			-- TODO-priv_platform: restart,
+		}
+
+		if flags["priv_plat"] then
+			for _, name in ipairs({
+				"exeName",
+				"clipboardPaste",
+				"clipboardCopy",
+				"openLink",
+				"restart",
+			}) do
+				script_env.platform[name] = plat[name]
+			end
+		end
+
+		script_env.socket = {
+			gettime = socket.gettime,
+		}
+
+		if flags["priv_socket"] then
+			for _, name in ipairs({
+				"tcp",
+			}) do
+				script_env.socket[name] = socket[name]
+			end
+		end
+
+		script_env.coroutine = {
+			wrap        = coroutine.wrap,
+			yield       = no_yield.yield,
+			resume      = coroutine.resume,
+			status      = coroutine.status,
+			isyieldable = no_yield.isyieldable,
+			running     = coroutine.running,
+			create      = coroutine.create,
 		}
 
 		script_env.os = {
@@ -259,13 +364,11 @@ local function factory(script_name)
 			date     = os.date,
 			time     = os.time,
 			clock    = os.clock,
-			-- TODO-priv_fs: rename
-			-- TODO-priv_fs: remove
-			-- TODO-priv_fs: tmpname
 		}
 
 		script_env.elements = {}
 		copy_simple_values(script_env.elements, elem)
+		sandbox_info.elements = script_env.elements
 
 		function script_env.elements.allocate(group, name)
 			check.is_string(group, "group", 2)
@@ -408,61 +511,161 @@ local function factory(script_name)
 			script_env.elements[info.identifier] = id
 		end
 
-		-- TODO: Slider
-		-- TODO: Textbox
-		-- TODO: ProgressBar
-		-- TODO: Checkbox
-		-- TODO: Window
-		-- TODO: Button
-		-- TODO: Label
 		script_env.interface = {
-			-- TODO: grabTextInput
-			-- TODO: addComponent
-			-- TODO: beginInput
-			-- TODO: beginThrowError
-			-- TODO: dropTextInput
-			-- TODO: textInputRect
-			-- TODO: beginMessageBox
-			-- TODO: removeComponent
-			-- TODO: showWindow
-			-- TODO: closeWindow
-			-- TODO: beginConfirm
+			beginInput      = ui.beginInput,
+			beginThrowError = ui.beginThrowError,
+			beginMessageBox = ui.beginMessageBox,
+			beginConfirm    = ui.beginConfirm,
+			textInputRect   = ui.textInputRect,
+			showWindow      = ui.showWindow,
+			closeWindow     = ui.closeWindow,
 		}
 		copy_simple_values(script_env.interface, ui)
+
+		local components_added = {}
+
+		function script_env.interface.addComponent(component)
+			if components_added[component] then
+				return
+			end
+			ui.addComponent(component)
+			components_added[component] = sandbox_atexit:atexit(function()
+				ui.removeComponent(component)
+			end)
+		end
+
+		function script_env.interface.removeComponent(component)
+			local atexit_entry = components_added[component]
+			if not atexit_entry then
+				return
+			end
+			atexit_entry:exit_now()
+		end
+
+		local textinput_grabs = {}
+		local textinput_drops = {}
+
+		function script_env.interface.grabTextInput()
+			local atexit_entry = next(textinput_drops)
+			if atexit_entry then
+				atexit_entry:exit_now()
+				return
+			end
+			ui.grabTextInput()
+			textinput_grabs[sandbox_atexit:atexit(function()
+				ui.dropTextInput()
+			end)] = true
+		end
+
+		function script_env.interface.dropTextInput()
+			local atexit_entry = next(textinput_grabs)
+			if atexit_entry then
+				atexit_entry:exit_now()
+				return
+			end
+			ui.dropTextInput()
+			textinput_drops[sandbox_atexit:atexit(function()
+				ui.grabTextInput()
+			end)] = true
+		end
+
+		local windows_should_close = false
+		sandbox_atexit:atexit(function()
+			windows_should_close = true
+		end)
+
+		local function divert_closeWindow_shim(name, func)
+			return function(window, ...)
+				if windows_should_close then
+					func = nil
+					if name == "onTick" then
+						ui.closeWindow(window)
+					end
+					return
+				end
+				return func(window, ...)
+			end
+		end
+
+		for _, name in ipairs({
+			"Slider",
+			"Textbox",
+			"ProgressBar",
+			"Checkbox",
+			"Window",
+			"Button",
+			"Label",
+		}) do
+			local real_new = _G[name].new
+			local proxy_to_component = setmetatable({}, { __mode = "k" })
+			local value_override = {}
+			local blocking_wrapper_factory = make_blocking_wrapper_factory()
+			local mt = { __index = function(proxy, key)
+				local component = assert(proxy_to_component[proxy], "invalid proxy")
+				local value = assert(component[key], "invalid key")
+				if not value_override[value] then
+					if type(value) == "function" and key:find("^on[A-Z]") then
+						value = blocking_wrapper_factory(value)
+					end
+					if name == "Window" then
+						value = divert_closeWindow_shim(key, value)
+					end
+					value_override[value] = value
+				end
+				return value_override[value]
+			end }
+			local function new(...)
+				local component = real_new(...)
+				local proxy = setmetatable({}, mt)
+				proxy_to_component[proxy] = component
+				return proxy
+			end
+			script_env[name] = {
+				new = new,
+			}
+		end
 
 		script_env.event = {
 			getmodifiers = evt.getmodifiers,
 		}
 		copy_simple_values(script_env.event, evt)
 
-		local function register_common(etype, func, register_once, reg_func, unreg_func)
-			if type(func) ~= "function" then
-				error("invalid event handler", 3)
-			end
-			local registry = event_handler_wrappers[etype]
-			if not registry[func] then
-				local wrapper = function(...)
-					return func(...)
+
+		local register_common
+		do
+			local blocking_wrapper_factory = make_blocking_wrapper_factory(false)
+
+			function register_common(etype, func, register_once, reg_func, unreg_func)
+				if type(func) ~= "function" then
+					error("invalid event handler", 3)
 				end
-				registry[func] = {
-					wrapper        = wrapper,
-					atexit_entries = {},
-				}
-				-- TODO: coroutine-based handlers for ui events
-			end
-			if not (register_once and next(registry[func].atexit_entries)) then
-				reg_func(registry[func].wrapper)
-				local atexit_entry
-				atexit_entry = sandbox_atexit:atexit(function()
-					unreg_func(registry[func].wrapper)
-					registry[func].atexit_entries[atexit_entry] = nil
-					if not next(registry[func].atexit_entries) then
-						registry[func] = nil
+				local registry = event_handler_wrappers[etype]
+				if not registry[func] then
+					local wrapper = environment.xpcall_wrap(func, function(_, full)
+						script_log:err("error in %s event handler: %s", etype, full)
+					end)
+					if BLOCKING_PROMPT_AVAILABLE[etype] then
+						wrapper = blocking_wrapper_factory(wrapper)
 					end
-				end)
-				registry[func].atexit_entries[atexit_entry] = true
+					registry[func] = {
+						wrapper        = wrapper,
+						atexit_entries = {},
+					}
+				end
+				if not (register_once and next(registry[func].atexit_entries)) then
+					reg_func(registry[func].wrapper)
+					local atexit_entry
+					atexit_entry = sandbox_atexit:atexit(function()
+						unreg_func(registry[func].wrapper)
+						registry[func].atexit_entries[atexit_entry] = nil
+						if not next(registry[func].atexit_entries) then
+							registry[func] = nil
+						end
+					end)
+					registry[func].atexit_entries[atexit_entry] = true
+				end
+				return func
 			end
-			return func
 		end
 
 		local function unregister_common(etype, func)
@@ -496,18 +699,20 @@ local function factory(script_name)
 			unregister_common(etype, func)
 		end
 
-		local function register_once_compat_event(name)
-			local etype = "register_once_compat_" .. name
-			event_handler_wrappers[etype] = {}
-			script_env.tpt["register_" .. name] = function(func)
-				register_common(etype, func, true, tpt["register_" .. name], tpt["unregister_" .. name])
+		if flags["deprecated_20230918"] then
+			local function register_once_compat_event(name)
+				local etype = "register_once_compat_" .. name
+				event_handler_wrappers[etype] = {}
+				script_env.tpt["register_" .. name] = function(func)
+					register_common(etype, func, true, tpt["register_" .. name], tpt["unregister_" .. name])
+				end
+				script_env.tpt["unregister_" .. name] = function(func)
+					unregister_common(etype, func)
+				end
 			end
-			script_env.tpt["unregister_" .. name] = function(func)
-				unregister_common(etype, func)
-			end
+			register_once_compat_event("mouseclick")
+			register_once_compat_event("keypress")
 		end
-		register_once_compat_event("mouseclick")
-		register_once_compat_event("keypress")
 
 		for key, value in pairs(evt) do
 			if type(value) == "number" then -- TODO: not ideal, event constants should be possible to discern by key
@@ -516,62 +721,57 @@ local function factory(script_name)
 			end
 		end
 
-		function script_env.tpt.register_step(func)
-			script_env.evt.register(script_env.evt.tick, func)
-		end
+		if flags["deprecated_20230918"] then
+			function script_env.tpt.register_step(func)
+				script_env.evt.register(script_env.evt.tick, func)
+			end
 
-		function script_env.tpt.unregister_step(func)
-			script_env.evt.unregister(script_env.evt.tick, func)
-		end
+			function script_env.tpt.unregister_step(func)
+				script_env.evt.unregister(script_env.evt.tick, func)
+			end
 
-		script_env.tpt.register_keyevent     = script_env.tpt.register_keypress
-		script_env.tpt.unregister_keyevent   = script_env.tpt.unregister_keypress
-		script_env.tpt.register_mouseevent   = script_env.tpt.register_mouseclick
-		script_env.tpt.unregister_mouseevent = script_env.tpt.unregister_mouseclick
+			script_env.tpt.register_keyevent     = script_env.tpt.register_keypress
+			script_env.tpt.unregister_keyevent   = script_env.tpt.unregister_keypress
+			script_env.tpt.register_mouseevent   = script_env.tpt.register_mouseclick
+			script_env.tpt.unregister_mouseevent = script_env.tpt.unregister_mouseclick
 
-		function script_env.tpt.element_func(func, id, mode)
-			script_env.elem.property(id, "Update", func or false, mode)
-		end
+			function script_env.tpt.element_func(func, id, mode)
+				script_env.elem.property(id, "Update", func or false, mode)
+			end
 
-		function script_env.tpt.graphics_func(func, id)
-			script_env.elem.property(id, "Graphics", func or false)
+			function script_env.tpt.graphics_func(func, id)
+				script_env.elem.property(id, "Graphics", func or false)
+			end
 		end
 
 		script_env.simulation = {
-			-- TODO-sim: gspeed
-			-- TODO-sim: updateUpTo
-			-- TODO-sim: temperatureScale
-			-- TODO-sim: deleteStamp
-			-- TODO-sim: listCustomGol
-			-- TODO-sim: saveStamp
-			-- TODO-sim: reloadSave
-			-- TODO-sim: loadSave
-			-- TODO-sim: removeCustomGol
-			-- TODO-sim: replaceModeFlags
-			-- TODO-sim: addCustomGol
-			-- TODO-sim: framerender
-			-- TODO-sim: getSaveID
-			-- TODO-sim: loadStamp
-			-- TODO-sim: takeSnapshot
-			-- TODO-sim: historyRestore
-			-- TODO-sim: historyForward
-			-- TODO-sim: signs
+			gspeed            = allow_query_only(sim.gspeed, 0),
+			temperatureScale  = allow_query_only(sim.temperatureScale, 0),
+			replaceModeFlags  = allow_query_only(sim.replaceModeFlags, 0),
+			framerender       = allow_query_only(sim.framerender, 0),
+			waterEqualisation = allow_query_only(sim.waterEqualisation, 0),
+			waterEqualization = allow_query_only(sim.waterEqualization, 0),
+			airMode           = allow_query_only(sim.airMode, 0),
+			ensureDeterminism = allow_query_only(sim.ensureDeterminism, 0),
+			prettyPowders     = allow_query_only(sim.prettyPowders, 0),
+			ambientHeat       = allow_query_only(sim.ambientHeat, 0),
+			ambientAirTemp    = allow_query_only(sim.ambientAirTemp, 0),
+			customGravity     = allow_query_only(sim.customGravity, 0),
+			randomseed        = allow_query_only(sim.randomseed, 0),
+			edgeMode          = allow_query_only(sim.edgeMode, 0),
+			gravityMode       = allow_query_only(sim.gravityMode, 0),
+			gravityGrid       = allow_query_only(sim.gravityGrid, 0),
 		}
 		for _, name in ipairs({
-			"waterEqualisation",
 			"decoBrush",
-			"airMode",
-			"resetPressure",
 			"neighbors",
 			"toolBox",
 			"partExists",
-			"ensureDeterminism",
 			"decoColor",
 			"toolLine",
 			"adjustCoords",
 			"partChangeType",
 			"partKill",
-			"prettyPowders",
 			"photons",
 			"decoLine",
 			"decoBox",
@@ -581,25 +781,18 @@ local function factory(script_name)
 			"partID",
 			"createWalls",
 			"partPosition",
-			"ambientHeat",
 			"pmap",
 			"gravMap",
 			"elementCount",
-			"clearSim",
 			"createLine",
-			"resetTemp",
 			"partNeighbours",
-			"edgeMode",
 			"floodDeco",
 			"createWallBox",
-			"gravityMode",
 			"floodParts",
 			"decoColour",
 			"velocityX",
 			"floodWalls",
 			"toolBrush",
-			"gravityGrid",
-			"waterEqualization",
 			"clearRect",
 			"hash",
 			"neighbours",
@@ -607,11 +800,8 @@ local function factory(script_name)
 			"partNeighbors",
 			"lastUpdatedID",
 			"createWallLine",
-			"randomseed",
 			"brush",
 			"partCreate",
-			"ambientAirTemp",
-			"customGravity",
 			"velocityY",
 			"parts",
 		}) do
@@ -619,25 +809,88 @@ local function factory(script_name)
 		end
 		copy_simple_values(script_env.simulation, sim)
 
+		if flags["priv_sim"] then
+			for _, name in ipairs({
+				"gravityGrid",
+				"gravityMode",
+				"edgeMode",
+				"randomseed",
+				"resetTemp",
+				"clearSim",
+				"customGravity",
+				"ambientAirTemp",
+				"ambientHeat",
+				"prettyPowders",
+				"ensureDeterminism",
+				"resetPressure",
+				"airMode",
+				"waterEqualisation",
+				"waterEqualization",
+				"gspeed",
+				"updateUpTo",
+				"temperatureScale",
+				"deleteStamp",
+				"listCustomGol",
+				"saveStamp",
+				"reloadSave",
+				"loadSave",
+				"removeCustomGol",
+				"replaceModeFlags",
+				"addCustomGol",
+				"framerender",
+				"getSaveID",
+				"loadStamp",
+				"takeSnapshot",
+				"historyRestore",
+				"historyForward",
+				"signs",
+			}) do
+				script_env.simulation[name] = sim[name]
+			end
+		end
+
 		function script_env.simulation.can_move(moving_id, into_id, value)
 			return property_common(moving_id, "_CanMove_" .. into_id, value)
 		end
 
+		script_env.debug = {
+			traceback = debug.traceback,
+		}
+
 		script_env.renderer = {
-			-- TODO-ren: zoomScope
-			-- TODO-ren: renderModes
-			-- TODO-ren: zoomEnabled
-			-- TODO-ren: zoomWindow
-			-- TODO-ren: depth3d
-			-- TODO-ren: colourMode
-			-- TODO-ren: colorMode
-			-- TODO-ren: decorations
-			-- TODO-ren: displayModes
-			-- TODO-ren: showBrush
-			-- TODO-ren: debugHUD
-			-- TODO-ren: grid
+			depth3d      = ren.depth3d,
+			zoomScope    = allow_query_only(ren.zoomScope, 0),
+			renderModes  = allow_query_only(ren.renderModes, 0),
+			zoomEnabled  = allow_query_only(ren.zoomEnabled, 0),
+			zoomWindow   = allow_query_only(ren.zoomWindow, 0),
+			colourMode   = allow_query_only(ren.colourMode, 0),
+			colorMode    = allow_query_only(ren.colorMode, 0),
+			decorations  = allow_query_only(ren.decorations, 0),
+			displayModes = allow_query_only(ren.displayModes, 0),
+			showBrush    = allow_query_only(ren.showBrush, 0),
+			debugHUD     = allow_query_only(ren.debugHUD, 0),
+			grid         = allow_query_only(ren.grid, 0),
 		}
 		copy_simple_values(script_env.renderer, ren)
+
+		if flags["priv_ren"] then
+			for _, name in ipairs({
+				"zoomScope",
+				"renderModes",
+				"zoomEnabled",
+				"zoomWindow",
+				"depth3d",
+				"colourMode",
+				"colorMode",
+				"decorations",
+				"displayModes",
+				"showBrush",
+				"debugHUD",
+				"grid",
+			}) do
+				script_env.renderer[name] = ren[name]
+			end
+		end
 
 		for short, name in pairs({
 			gfx  = "graphics",
